@@ -3,12 +3,13 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_native_image/flutter_native_image.dart';
+import 'dart:ui' as ui;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final cameras = await availableCameras();
   final firstCamera = cameras.last;
-
   runApp(
     MaterialApp(
       home: TakePictureScreen(camera: firstCamera),
@@ -32,12 +33,15 @@ class TakePictureScreenState extends State<TakePictureScreen> {
   late CameraController _controller;
   late Future<void> _initializeControllerFuture;
 
+  double assignedWidth = 300;
+  double assignedHeight = 300;
+
   @override
   void initState() {
     super.initState();
     _controller = CameraController(
       widget.camera,
-      ResolutionPreset.medium,
+      ResolutionPreset.high, // Change resolution preset here
     );
     _initializeControllerFuture = _controller.initialize();
   }
@@ -70,14 +74,18 @@ class TakePictureScreenState extends State<TakePictureScreen> {
             if (!context.mounted) return;
             await Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (context) => TransformPictureScreen(imagePath: image.path),
+                builder: (context) => TransformPictureScreen(
+                  imagePath: image.path,
+                  assignedWidth: assignedWidth,
+                  assignedHeight: assignedHeight,
+                ),
               ),
             );
           } catch (e) {
             print('Error taking picture: $e');
           }
         },
-        child: const Icon(Icons.camera_alt),
+        child: Icon(Icons.camera_alt),
       ),
     );
   }
@@ -86,7 +94,7 @@ class TakePictureScreenState extends State<TakePictureScreen> {
     return Center(
       child: ClipRRect(
         child: SizedOverflowBox(
-          size: const Size(300, 300), // aspect is 1:1
+          size: Size(assignedWidth, assignedHeight),
           alignment: Alignment.center,
           child: CameraPreview(_controller),
         ),
@@ -97,8 +105,15 @@ class TakePictureScreenState extends State<TakePictureScreen> {
 
 class TransformPictureScreen extends StatelessWidget {
   final String imagePath;
+  final double assignedWidth;
+  final double assignedHeight;
 
-  const TransformPictureScreen({super.key, required this.imagePath});
+  const TransformPictureScreen({
+    super.key,
+    required this.imagePath,
+    required this.assignedWidth,
+    required this.assignedHeight,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -106,25 +121,22 @@ class TransformPictureScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Transform the Picture')),
       body: Center(
         child: FutureBuilder<File>(
-          future: _loadImageFile(imagePath),
+          future: _cropAndLoadImageFile(imagePath),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.done) {
               if (snapshot.hasData) {
                 final file = snapshot.data!;
-                print('Image file loaded: ${file.path}');
-
+                print('Cropped image file loaded: ${file.path}');
                 return Transform(
                   transform: Matrix4.rotationY(3.14),
                   alignment: Alignment.center,
                   child: Image.file(
                     file,
-                    width: 300,
-                    height: 300,
                     fit: BoxFit.cover,
                   ),
                 );
               } else {
-                print('Error: ${snapshot.error}'); // Debug print
+                print('Error: ${snapshot.error}');
                 return const Center(child: Text('Error loading image'));
               }
             } else {
@@ -136,10 +148,49 @@ class TransformPictureScreen extends StatelessWidget {
     );
   }
 
-  Future<File> _loadImageFile(String path) async {
+  Future<File> _cropAndLoadImageFile(String path) async {
     final file = File(path);
+
     if (await file.exists()) {
-      return file;
+      final bytes = await file.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+
+      final widthOfImage = image.width;
+      final heightOfImage = image.height;
+
+      print('Original Image dimensions: width = $widthOfImage, height = $heightOfImage');
+
+      final width = assignedWidth.toInt();
+      final height = assignedHeight.toInt();
+
+      final double aspectRatio = widthOfImage / heightOfImage;
+      final double targetAspectRatio = width / height.toDouble();
+
+      int cropWidth, cropHeight, originX, originY;
+
+      if (aspectRatio > targetAspectRatio) {
+        cropHeight = heightOfImage;
+        cropWidth = (heightOfImage * targetAspectRatio).toInt();
+      } else {
+        cropWidth = widthOfImage;
+        cropHeight = (widthOfImage / targetAspectRatio).toInt();
+      }
+
+      originX = ((widthOfImage - cropWidth) / 2).toInt();
+      originY = ((heightOfImage - cropHeight) / 2).toInt();
+
+      print('Cropping parameters: originX = $originX, originY = $originY, width = $cropWidth, height = $cropHeight');
+
+      final croppedFile = await FlutterNativeImage.cropImage(
+        file.path,
+        originX,
+        originY,
+        cropWidth,
+        cropHeight,
+      );
+      return croppedFile;
     } else {
       throw Exception('File does not exist');
     }
